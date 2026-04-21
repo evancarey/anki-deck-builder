@@ -1,26 +1,25 @@
 from dataclasses import dataclass
 
-DEFAULT_DECK_PREFIX = "French"
-AUDIO_CACHE_VERSION = "v2"
 
-@dataclass
+@dataclass(frozen=True)
 class AppConfig:
-    input_csv: str
-    output_file: str
-    voice_id: str
+    input: str
+    output: str
+    voice: str
     workers: int
     deck_prefix: str
-    schema_name: str
-    deck_type_name: str
+    schema: str
+    deck_type: str
     freq_mode: str
     level_mode: str
-    export_level_report: str
-    write_updated_csv_path: str
-    in_place: bool
-    backup: bool
-    diff_output: str
-    export_anki_csv_path: str
-    export_media_dir: str
-    skip_apkg: bool
-    cache_manifest: str
-    no_cache_cleanup: bool
+    export_level_report: str = ""
+    write_updated_csv: str = ""
+    in_place: bool = False
+    backup: bool = False
+    diff_output: str = ""
+    export_anki_csv: str = ""
+    export_media_dir: str = ""
+    skip_apkg: bool = False
+    cache_manifest: str = ""
+    no_cache_cleanup: bool = False
+    cache_dir: str = ".cache"

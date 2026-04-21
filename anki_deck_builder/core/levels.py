@@ -1,3 +1,4 @@
+
 def infer_level(avg_zipf: float, min_zipf: float, token_count: int) -> str:
     if avg_zipf >= 5.2 and min_zipf >= 3.2 and token_count <= 8:
         return "A1"
