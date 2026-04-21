@@ -5,7 +5,7 @@ import json
 import os
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import boto3
@@ -14,9 +14,15 @@ from tqdm import tqdm
 from wordfreq import zipf_frequency
 
 
-CACHE_FILE = ".audio_cache.json"
+CACHE_DIR = ".cache"
+AUDIO_CACHE_DIR = os.path.join(CACHE_DIR, "audio")
+MANIFEST_DIR = os.path.join(CACHE_DIR, "manifests")
+
 DEFAULT_DECK_PREFIX = "French"
 MODEL_ID = 1091735999
+
+# Bump this only if you intentionally want to invalidate all cached audio.
+AUDIO_CACHE_VERSION = "v2"
 
 
 def parse_args():
@@ -91,7 +97,34 @@ def parse_args():
         action="store_true",
         help="Skip writing the .apkg package and only write CSV/report/media outputs",
     )
+    parser.add_argument(
+        "--cache-manifest",
+        default="",
+        help=(
+            "Optional manifest name used for shared-cache cleanup. "
+            "Defaults to a deterministic name derived from input path, deck prefix, and voice."
+        ),
+    )
+    parser.add_argument(
+        "--no-cache-cleanup",
+        action="store_true",
+        help="Do not delete orphaned shared-cache audio files after writing the current manifest.",
+    )
     return parser.parse_args()
+
+
+def ensure_dir(path):
+    os.makedirs(path, exist_ok=True)
+
+
+def ensure_cache_dirs():
+    ensure_dir(CACHE_DIR)
+    ensure_dir(AUDIO_CACHE_DIR)
+    ensure_dir(MANIFEST_DIR)
+
+
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
 
 
 def create_model():
@@ -127,24 +160,102 @@ def create_model():
     )
 
 
-def make_guid(fr, en):
+# Keep note GUID behavior stable so existing notes stay matched.
+def make_note_guid(fr, en):
     return hashlib.md5((fr + en).encode("utf-8")).hexdigest()
 
 
-def make_content_hash(fr, ipa, en):
-    return hashlib.md5((fr + ipa + en).encode("utf-8")).hexdigest()
+def audio_identity_text(fr, voice_id):
+    return f"{AUDIO_CACHE_VERSION}|voice={voice_id}|text={fr}"
 
 
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+def make_audio_cache_key(fr, voice_id):
+    return hashlib.md5(audio_identity_text(fr, voice_id).encode("utf-8")).hexdigest()
 
 
-def save_cache(cache):
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, indent=2, ensure_ascii=False)
+def audio_cache_path_from_key(audio_key, speed):
+    return os.path.join(AUDIO_CACHE_DIR, f"{audio_key}_{speed}.mp3")
+
+
+def audio_cache_paths(fr, voice_id):
+    audio_key = make_audio_cache_key(fr, voice_id)
+    return {
+        "key": audio_key,
+        "slow": audio_cache_path_from_key(audio_key, "slow"),
+        "normal": audio_cache_path_from_key(audio_key, "normal"),
+    }
+
+
+def default_manifest_name(input_csv, deck_prefix, voice_id):
+    basis = json.dumps(
+        {
+            "input": os.path.abspath(input_csv),
+            "deck_prefix": deck_prefix,
+            "voice": voice_id,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    digest = hashlib.md5(basis.encode("utf-8")).hexdigest()[:16]
+    safe_prefix = re.sub(r"[^A-Za-z0-9._-]+", "_", deck_prefix).strip("._-") or "deck"
+    return f"{safe_prefix}_{voice_id}_{digest}"
+
+
+def manifest_path(manifest_name):
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", manifest_name).strip("._-")
+    if not safe_name:
+        safe_name = "default"
+    return os.path.join(MANIFEST_DIR, f"{safe_name}.json")
+
+
+def write_manifest(manifest_name, payload):
+    ensure_cache_dirs()
+    path = manifest_path(manifest_name)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    return path
+
+
+def load_all_manifest_references():
+    ensure_cache_dirs()
+    referenced = set()
+
+    for name in os.listdir(MANIFEST_DIR):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(MANIFEST_DIR, name)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            for relpath in payload.get("audio_files", []):
+                referenced.add(os.path.basename(relpath))
+        except Exception as e:
+            print(f"⚠️ Could not read manifest {path}: {e}")
+
+    return referenced
+
+
+def cleanup_audio_cache_from_manifests():
+    ensure_cache_dirs()
+    referenced = load_all_manifest_references()
+
+    removed = 0
+    kept = 0
+
+    for name in os.listdir(AUDIO_CACHE_DIR):
+        if not name.lower().endswith(".mp3"):
+            continue
+        path = os.path.join(AUDIO_CACHE_DIR, name)
+        if name in referenced:
+            kept += 1
+            continue
+        try:
+            os.remove(path)
+            removed += 1
+        except Exception as e:
+            print(f"⚠️ Could not remove cache file {path}: {e}")
+
+    print(f"\n🧹 Cache cleanup complete: kept {kept}, removed {removed} orphaned audio files")
 
 
 def load_rows(csv_file):
@@ -161,6 +272,7 @@ def escape_ssml_text(text):
 
 
 def synthesize(polly, text, filename, voice_id, slow=False):
+    ensure_cache_dirs()
     try:
         if slow:
             ssml = f"<speak><prosody rate='70%'>{escape_ssml_text(text)}</prosody></speak>"
@@ -494,10 +606,6 @@ def maybe_write_updated_csv(rows, input_csv, write_updated_csv_path, in_place, b
     write_updated_csv(rows, target_path)
 
 
-def ensure_dir(path):
-    os.makedirs(path, exist_ok=True)
-
-
 def copy_file_if_exists(src, dst_dir):
     if not src or not os.path.exists(src):
         return None
@@ -508,7 +616,7 @@ def copy_file_if_exists(src, dst_dir):
     return dst
 
 
-def export_anki_import_csv(rows, output_path):
+def export_anki_import_csv(rows, output_path, voice_id):
     fieldnames = [
         "French",
         "IPA",
@@ -524,9 +632,7 @@ def export_anki_import_csv(rows, output_path):
         writer.writeheader()
 
         for row in rows:
-            guid = make_guid(row["French"], row["English"])
-            slow_file = f"{guid}_slow.mp3"
-            normal_file = f"{guid}_normal.mp3"
+            audio_paths = audio_cache_paths(row["French"], voice_id)
 
             image_html = ""
             image_name = row["Image"]
@@ -539,8 +645,8 @@ def export_anki_import_csv(rows, output_path):
                     "IPA": row["IPA"],
                     "English": row["English"],
                     "Image": image_html,
-                    "AudioSlow": f"[sound:{slow_file}]",
-                    "AudioNormal": f"[sound:{normal_file}]",
+                    "AudioSlow": f"[sound:{os.path.basename(audio_paths['slow'])}]",
+                    "AudioNormal": f"[sound:{os.path.basename(audio_paths['normal'])}]",
                     "Tags": " ".join(row["Tags"]),
                 }
             )
@@ -548,22 +654,20 @@ def export_anki_import_csv(rows, output_path):
     print(f"\n📝 Exported Anki-import CSV: {output_path}")
 
 
-def export_media_bundle(rows, media_dir):
+def export_media_bundle(rows, media_dir, voice_id):
     ensure_dir(media_dir)
     copied = 0
     missing = []
-
     seen = set()
 
     for row in rows:
-        guid = make_guid(row["French"], row["English"])
-        slow_file = f"{guid}_slow.mp3"
-        normal_file = f"{guid}_normal.mp3"
+        audio_paths = audio_cache_paths(row["French"], voice_id)
 
-        for media_path in [slow_file, normal_file]:
-            if media_path in seen:
+        for media_path in [audio_paths["slow"], audio_paths["normal"]]:
+            media_key = os.path.basename(media_path)
+            if media_key in seen:
                 continue
-            seen.add(media_path)
+            seen.add(media_key)
             if os.path.exists(media_path):
                 copy_file_if_exists(media_path, media_dir)
                 copied += 1
@@ -590,12 +694,35 @@ def export_media_bundle(rows, media_dir):
             print("  - ...")
 
 
-def maybe_export_csv_media(rows, export_anki_csv_path, export_media_dir):
+def maybe_export_csv_media(rows, export_anki_csv_path, export_media_dir, voice_id):
     if export_anki_csv_path:
-        export_anki_import_csv(rows, export_anki_csv_path)
+        export_anki_import_csv(rows, export_anki_csv_path, voice_id)
 
     if export_media_dir:
-        export_media_bundle(rows, export_media_dir)
+        export_media_bundle(rows, export_media_dir, voice_id)
+
+
+def build_manifest_payload(rows, input_csv, output_file, deck_prefix, voice_id):
+    audio_files = set()
+    audio_keys = set()
+
+    for row in rows:
+        audio_paths = audio_cache_paths(row["French"], voice_id)
+        audio_keys.add(audio_paths["key"])
+        audio_files.add(os.path.relpath(audio_paths["slow"], CACHE_DIR))
+        audio_files.add(os.path.relpath(audio_paths["normal"], CACHE_DIR))
+
+    return {
+        "version": 1,
+        "updated_at": utc_now_iso(),
+        "input_csv": os.path.abspath(input_csv),
+        "output_file": os.path.abspath(output_file),
+        "deck_prefix": deck_prefix,
+        "voice": voice_id,
+        "audio_cache_version": AUDIO_CACHE_VERSION,
+        "audio_keys": sorted(audio_keys),
+        "audio_files": sorted(audio_files),
+    }
 
 
 def build_decks(
@@ -614,7 +741,11 @@ def build_decks(
     export_anki_csv_path,
     export_media_dir,
     skip_apkg,
+    cache_manifest,
+    no_cache_cleanup,
 ):
+    ensure_cache_dirs()
+
     polly = boto3.client("polly", region_name="us-east-1")
     model = create_model()
 
@@ -638,7 +769,6 @@ def build_decks(
     if diff_output:
         export_diff_csv(rows, diff_output)
 
-    cache = load_cache()
     media_files = set()
     futures = []
     total_chars = 0
@@ -649,41 +779,33 @@ def build_decks(
     with ThreadPoolExecutor(max_workers=workers) as executor:
         for row in rows:
             fr = row["French"]
-            ipa = row["IPA"]
-            en = row["English"]
+            audio_paths = audio_cache_paths(fr, voice_id)
 
-            guid = make_guid(fr, en)
-            content_hash = make_content_hash(fr, ipa, en)
+            slow_file = audio_paths["slow"]
+            normal_file = audio_paths["normal"]
 
-            slow_file = f"{guid}_slow.mp3"
-            normal_file = f"{guid}_normal.mp3"
-
-            if (
-                cache.get(guid) == content_hash
-                and os.path.exists(slow_file)
-                and os.path.exists(normal_file)
-            ):
+            if os.path.exists(slow_file) and os.path.exists(normal_file):
                 media_files.add(slow_file)
                 media_files.add(normal_file)
                 continue
 
-            cache[guid] = content_hash
             rows_regenerated += 1
             total_chars += len(fr) * 2
 
-            futures.append(
-                executor.submit(synthesize, polly, fr, slow_file, voice_id, True)
-            )
-            futures.append(
-                executor.submit(synthesize, polly, fr, normal_file, voice_id, False)
-            )
+            if not os.path.exists(slow_file):
+                futures.append(
+                    executor.submit(synthesize, polly, fr, slow_file, voice_id, True)
+                )
+
+            if not os.path.exists(normal_file):
+                futures.append(
+                    executor.submit(synthesize, polly, fr, normal_file, voice_id, False)
+                )
 
         for future in tqdm(as_completed(futures), total=len(futures), desc="Audio"):
             result = future.result()
             if result:
                 media_files.add(result)
-
-    save_cache(cache)
 
     cost_usd = total_chars * 16 / 1_000_000
     print(f"\n💰 Estimated AWS Polly cost for this run: ${cost_usd:.4f} USD")
@@ -693,7 +815,24 @@ def build_decks(
         rows=rows,
         export_anki_csv_path=export_anki_csv_path,
         export_media_dir=export_media_dir,
+        voice_id=voice_id,
     )
+
+    manifest_name = cache_manifest or default_manifest_name(csv_file, deck_prefix, voice_id)
+    manifest_payload = build_manifest_payload(
+        rows=rows,
+        input_csv=csv_file,
+        output_file=output_file,
+        deck_prefix=deck_prefix,
+        voice_id=voice_id,
+    )
+    manifest_file = write_manifest(manifest_name, manifest_payload)
+    print(f"\n🗂 Wrote cache manifest: {manifest_file}")
+
+    if not no_cache_cleanup:
+        cleanup_audio_cache_from_manifests()
+    else:
+        print("\n⏭ Skipped cache cleanup (--no-cache-cleanup)")
 
     if skip_apkg:
         print("\n⏭ Skipped .apkg generation (--skip-apkg)")
@@ -719,10 +858,11 @@ def build_decks(
             fr = row["French"]
             ipa = row["IPA"]
             en = row["English"]
-            guid = make_guid(fr, en)
+            note_guid = make_note_guid(fr, en)
+            audio_paths = audio_cache_paths(fr, voice_id)
 
-            slow_file = f"{guid}_slow.mp3"
-            normal_file = f"{guid}_normal.mp3"
+            slow_file = audio_paths["slow"]
+            normal_file = audio_paths["normal"]
 
             image_html = ""
             image_name = row["Image"]
@@ -731,6 +871,11 @@ def build_decks(
                 if os.path.exists(image_name):
                     media_files.add(image_name)
 
+            if os.path.exists(slow_file):
+                media_files.add(slow_file)
+            if os.path.exists(normal_file):
+                media_files.add(normal_file)
+
             note = genanki.Note(
                 model=model,
                 fields=[
@@ -738,11 +883,11 @@ def build_decks(
                     ipa,
                     en,
                     image_html,
-                    f"[sound:{slow_file}]",
-                    f"[sound:{normal_file}]",
+                    f"[sound:{os.path.basename(slow_file)}]",
+                    f"[sound:{os.path.basename(normal_file)}]",
                 ],
                 tags=row["Tags"],
-                guid=guid,
+                guid=note_guid,
             )
 
             deck.add_note(note)
@@ -775,6 +920,8 @@ def main():
         export_anki_csv_path=args.export_anki_csv,
         export_media_dir=args.export_media_dir,
         skip_apkg=args.skip_apkg,
+        cache_manifest=args.cache_manifest,
+        no_cache_cleanup=args.no_cache_cleanup,
     )
 
 
