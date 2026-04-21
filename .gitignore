@@ -1,0 +1,44 @@
+# -----------------------------
+# Terraform state
+# -----------------------------
+*.tfstate
+*.tfstate.backup
+*.tfvars     # ignore local secrets if needed
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# -----------------------------
+# Terraform directories
+# -----------------------------
+.terraform/
+# Do NOT ignore .terraform.lock.hcl (commit it!)
+
+# -----------------------------
+# Local environment files
+# -----------------------------
+*.env
+*.local
+
+# -----------------------------
+# Vim temporary files
+# -----------------------------
+*.swp
+*.swo
+*.swn
+*~
+Session.vim
+
+# -----------------------------
+# MacOS files
+# -----------------------------
+.DS_Store
+
+# -----------------------------
+# Logs and artifacts
+# -----------------------------
+*.log
+*.zip
+*.tar.gz
