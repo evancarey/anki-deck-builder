@@ -33,7 +33,7 @@ pip install -e .
 ## Example
 
 ```bash
-python -m anki_deck_builder \
+anki-build \
   --input french_sentences.csv \
   --output french_sentences.apkg \
   --schema french-sentences \
@@ -47,3 +47,21 @@ Add a new parser function in `anki_deck_builder/core/schemas.py` and register it
 ## Add a new deck type plugin
 
 Add the pure note-field / deck-name logic in `anki_deck_builder/core/deck_types.py` and register it in `DECK_TYPE_PLUGINS`.
+
+
+## Call/response CSV format
+
+For `--schema french-call-response --deck-type french-call-response`, use columns:
+
+- `CallFrench`
+- `CallIPA`
+- `CallEnglish`
+- `ResponseFrench`
+- `ResponseIPA`
+- `ResponseEnglish`
+- optional: `Level`, `Tags`, `Image`
+
+Card layout:
+
+- Front: call IPA and the two call audio buttons
+- Back: call French + English translation, then response French + IPA + English translation

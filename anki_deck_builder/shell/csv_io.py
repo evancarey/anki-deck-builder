@@ -20,22 +20,54 @@ def make_backup(path: str) -> str:
     return backup_path
 
 
+def row_for_updated_csv(item: PreparedItem) -> dict[str, str]:
+    source_schema = item.extra.get("source_schema", "french-sentences")
+    if source_schema == "french-call-response":
+        return {
+            "CallFrench": item.extra.get("call_french", item.prompt),
+            "CallIPA": item.extra.get("call_ipa", item.ipa),
+            "CallEnglish": item.extra.get("call_english", ""),
+            "ResponseFrench": item.extra.get("response_french", item.answer),
+            "ResponseIPA": item.extra.get("response_ipa", ""),
+            "ResponseEnglish": item.extra.get("response_english", ""),
+            "Level": item.level,
+            "Tags": ",".join(item.tags),
+            "Image": item.image,
+        }
+    return {
+        "French": item.prompt,
+        "IPA": item.ipa,
+        "English": item.answer,
+        "Level": item.level,
+        "Tags": ",".join(item.tags),
+        "Image": item.image,
+    }
+
+
+def updated_csv_fieldnames(items: list[PreparedItem]) -> list[str]:
+    source_schema = items[0].extra.get("source_schema", "french-sentences") if items else "french-sentences"
+    if source_schema == "french-call-response":
+        return [
+            "CallFrench",
+            "CallIPA",
+            "CallEnglish",
+            "ResponseFrench",
+            "ResponseIPA",
+            "ResponseEnglish",
+            "Level",
+            "Tags",
+            "Image",
+        ]
+    return ["French", "IPA", "English", "Level", "Tags", "Image"]
+
+
 def write_updated_csv(items: list[PreparedItem], output_path: str) -> None:
-    fieldnames = ["French", "IPA", "English", "Level", "Tags", "Image"]
+    fieldnames = updated_csv_fieldnames(items)
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for item in items:
-            writer.writerow(
-                {
-                    "French": item.prompt,
-                    "IPA": item.ipa,
-                    "English": item.answer,
-                    "Level": item.level,
-                    "Tags": ",".join(item.tags),
-                    "Image": item.image,
-                }
-            )
+            writer.writerow(row_for_updated_csv(item))
     print(f"\n💾 Wrote updated CSV: {output_path}")
 
 

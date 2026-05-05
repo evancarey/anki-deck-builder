@@ -21,13 +21,21 @@ def parse_french_sentences_row(row: dict[str, str]) -> StudyItem:
 
 def parse_call_response_row(row: dict[str, str]) -> StudyItem:
     return StudyItem(
-        prompt=row["Call"],
-        answer=row["Response"],
-        ipa=(row.get("IPA") or "").strip(),
+        prompt=row["CallFrench"],
+        answer=row["ResponseFrench"],
+        ipa=(row.get("CallIPA") or "").strip(),
         image=(row.get("Image") or "").strip(),
         raw_level=(row.get("Level") or "").strip(),
         tags=_split_tags(row.get("Tags") or ""),
-        extra={"source_schema": "french-call-response"},
+        extra={
+            "source_schema": "french-call-response",
+            "call_french": row["CallFrench"],
+            "call_ipa": (row.get("CallIPA") or "").strip(),
+            "call_english": (row.get("CallEnglish") or "").strip(),
+            "response_french": row["ResponseFrench"],
+            "response_ipa": (row.get("ResponseIPA") or "").strip(),
+            "response_english": (row.get("ResponseEnglish") or "").strip(),
+        },
     )
 
 
@@ -37,7 +45,7 @@ SCHEMA_PLUGINS = {
         "parse_row": parse_french_sentences_row,
     },
     "french-call-response": {
-        "required_headers": ("Call", "Response"),
+        "required_headers": ("CallFrench", "CallIPA", "CallEnglish", "ResponseFrench", "ResponseIPA", "ResponseEnglish"),
         "parse_row": parse_call_response_row,
     },
 }

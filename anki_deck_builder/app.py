@@ -39,13 +39,13 @@ def run_app(config: AppConfig) -> None:
 
     audio_requests = plan_audio_requests(prepared_items, config.cache_dir, config.voice)
     audio_results = realize_audio_requests(audio_requests, config.workers)
-    audio_by_prompt = {r["item_prompt"]: r for r in audio_results}
+    audio_by_request_id = {r["request_id"]: r for r in audio_results}
 
     if config.export_anki_csv:
-        anki_csv_io.export_anki_import_csv(prepared_items, audio_by_prompt, config.export_anki_csv)
+        anki_csv_io.export_anki_import_csv(prepared_items, audio_by_request_id, config.export_anki_csv)
 
     if config.export_media_dir:
-        media_io.export_media_bundle(prepared_items, audio_by_prompt, config.export_media_dir)
+        media_io.export_media_bundle(prepared_items, audio_by_request_id, config.export_media_dir)
 
     manifest_name = config.cache_manifest or default_manifest_name(config.input, config.deck_prefix, config.voice)
     manifest_payload = build_manifest_payload(prepared_items, audio_results, config)
@@ -61,5 +61,5 @@ def run_app(config: AppConfig) -> None:
         print("\n⏭ Skipped .apkg generation (--skip-apkg)")
         return
 
-    note_specs = build_note_specs(prepared_items, audio_by_prompt, deck_plugin, config.deck_prefix)
+    note_specs = build_note_specs(prepared_items, audio_by_request_id, deck_plugin, config.deck_prefix)
     apkg_io.write_apkg(note_specs, deck_plugin, config.output)

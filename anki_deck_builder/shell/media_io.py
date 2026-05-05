@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 
+from ..core.deck_types import make_note_guid
 from ..core.models import PreparedItem
 
 
@@ -20,23 +21,25 @@ def copy_file_if_exists(src: str, dst_dir: str) -> str | None:
     return dst
 
 
-def export_media_bundle(items: list[PreparedItem], audio_by_prompt: dict[str, dict[str, str]], media_dir: str) -> None:
+def export_media_bundle(items: list[PreparedItem], audio_by_request_id: dict[str, dict], media_dir: str) -> None:
     ensure_dir(media_dir)
     copied = 0
     missing: list[str] = []
     seen: set[str] = set()
     for item in items:
-        audio = audio_by_prompt[item.prompt]
-        for media_path in [audio["slow_path"], audio["normal_path"]]:
-            basename = os.path.basename(media_path)
-            if basename in seen:
-                continue
-            seen.add(basename)
-            if os.path.exists(media_path):
-                copy_file_if_exists(media_path, media_dir)
-                copied += 1
-            else:
-                missing.append(media_path)
+        request_id = make_note_guid(item.prompt, item.answer)
+        audio = audio_by_request_id[request_id]
+        for part in audio.get("audio_parts", {}).values():
+            for media_path in [part["slow_path"], part["normal_path"]]:
+                basename = os.path.basename(media_path)
+                if basename in seen:
+                    continue
+                seen.add(basename)
+                if os.path.exists(media_path):
+                    copy_file_if_exists(media_path, media_dir)
+                    copied += 1
+                else:
+                    missing.append(media_path)
         if item.image:
             image_basename = os.path.basename(item.image)
             if image_basename not in seen:
